@@ -1,26 +1,16 @@
 import streamlit as st
 from dotenv import load_dotenv
 from main import grafo
-   
 
-# =========================
-# Configuração inicial
-# =========================
 load_dotenv()
 st.set_page_config(page_title="Assistente de Políticas Internas", layout="centered")
 
-# =========================
-# Estado da sessão
-# =========================
 if "historico" not in st.session_state:
     st.session_state.historico = []
 
 if "mensagem" not in st.session_state:
     st.session_state.mensagem = ""
 
-# =========================
-# Funções auxiliares
-# =========================
 def enviar_mensagem():
     if st.session_state.mensagem.strip():
         resposta_final = grafo.invoke({"pergunta": st.session_state.mensagem})
@@ -29,21 +19,16 @@ def enviar_mensagem():
             "resposta": resposta_final.get("resposta", ""),
             "citacoes": resposta_final.get("citacoes", []),
         })
-        st.session_state.mensagem = ""  # limpa campo
+        st.session_state.mensagem = ""
 
 def novo_chat():
     st.session_state.historico = []
     st.session_state.mensagem = ""
 
-# =========================
-# Layout da página
-# =========================
 st.title("💬 Assistente de Políticas Internas - Carraro Desenvolvimento")
 
-# Campo de entrada
 st.text_input("Digite sua mensagem:", key="mensagem", on_change=enviar_mensagem)
 
-# Botões
 col1, col2 = st.columns([1, 1])
 with col1:
     st.button("Enviar", on_click=enviar_mensagem, use_container_width=True)
@@ -52,7 +37,6 @@ with col2:
 
 st.markdown("---")
 
-# Histórico de mensagens
 for item in reversed(st.session_state.historico):
     st.markdown(f"**Você:** {item['pergunta']}")
     st.markdown(f"**Assistente:** {item['resposta']}")
