@@ -1,21 +1,7 @@
 import streamlit as st
 from dotenv import load_dotenv
-
-# Importa explicitamente do main.py
-from main import (
-    grafo,
-    triagem,
-    perguntar_politica_RAG,
-    AgentState,
-    node_triagem,
-    node_auto_resolver,
-    node_pedir_info,
-    node_abrir_chamado,
-    decidir_pos_triagem,
-    decidir_pos_auto_resolver,
-    workflow,
-    KEYWORDS_ABRIR_TICKET
-)
+from main import grafo
+   
 
 # =========================
 # Configuração inicial
