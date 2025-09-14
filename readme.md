@@ -1,9 +1,6 @@
 # 📄 Assistente de Políticas Internas – Carraro Desenvolvimento
 
 
-# 📄 Acesse: https://iapararh-dkxvjn5jqlxz3dipgtkvk8.streamlit.app/
-
-
 Este projeto implementa um **Assistente de Service Desk** especializado em **políticas internas** (RH/IT) da empresa *Carraro Desenvolvimento*, utilizando **LangChain**, **Google Generative AI** e **Streamlit** para oferecer:
 
 - **Triagem automática** de solicitações (`AUTO_RESOLVER`, `PEDIR_INFO`, `ABRIR_CHAMADO`)
