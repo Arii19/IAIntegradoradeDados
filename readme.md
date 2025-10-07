@@ -69,7 +69,7 @@
 ### **1. Clone e Setup**
 ```bash
 git clone https://github.com/Arii19/IAIntegradoradeDados.git
-cd IAParaRH
+cd IAIntegradoradeDados
 
 # Criar ambiente virtual
 python -m venv venv
