@@ -68,7 +68,7 @@
 
 ### **1. Clone e Setup**
 ```bash
-git clone https://github.com/Arii19/IAParaRH.git
+git clone https://github.com/Arii19/IAIntegradoradeDados.git
 cd IAParaRH
 
 # Criar ambiente virtual
