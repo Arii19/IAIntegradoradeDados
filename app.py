@@ -7,7 +7,7 @@ from datetime import datetime
 
 load_dotenv()
 st.set_page_config(
-    page_title="Integrador de Dados", 
+    page_title=" 🤖Integrador de Dados", 
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -36,13 +36,13 @@ st.markdown("""
     }
     
     .user-message {
-        background: linear-gradient(135deg, #667eea 0%, #14dede 100%);
+        background: linear-gradient(135deg, #6b7c6e 0%, #5a8d8a 100%);
         margin-left: 20%;
         color: white;
     }
     
     .assistant-message {
-        background: linear-gradient(135deg, #93c0fb 0%, #0c4547 100%);
+        background: linear-gradient(135deg, #7d8a7f 0%, #4a6962 100%);
         margin-right: 20%;
         color: white;
     }
@@ -122,14 +122,13 @@ if "chat_atual_id" not in st.session_state:
 
 def enviar_mensagem():
     if st.session_state.mensagem.strip():
-        resposta_final = processar_pergunta(st.session_state.mensagem)
+        # Passar o histórico atual para o contexto
+        resposta_final = processar_pergunta(st.session_state.mensagem, st.session_state.historico)
         st.session_state.historico.append({
             "pergunta": st.session_state.mensagem,
             "resposta": resposta_final.get("resposta", ""),
             "citacoes": resposta_final.get("citacoes", []),
-            "confianca": resposta_final.get("confianca_geral", 0.0),
             "acao": resposta_final.get("acao_final", ""),
-            "qualidade": resposta_final.get("qualidade_resposta", ""),
             "timestamp": resposta_final.get("timestamp", datetime.now().isoformat())
         })
         st.session_state.mensagem = ""
@@ -166,9 +165,8 @@ with st.sidebar:
         logo_files = list(logo_path.glob("*.png")) + list(logo_path.glob("*.jpg")) + list(logo_path.glob("*.jpeg")) + list(logo_path.glob("*.svg"))
         if logo_files:
             st.image(str(logo_files[0]), width=180)
-    
-    st.markdown("### � Integrador de Dados")
-    st.markdown("**Carraro Desenvolvimento**")
+    st.markdown("### 🤖 Integrador de Dados")
+    st.markdown("**Smartbreeder**")
     
     st.markdown("---")
     
@@ -224,10 +222,10 @@ mensagem_input = st.text_input("", key="mensagem", placeholder="Digite sua pergu
 # Botões de ação centralizados
 col1, col2, col3, col4, col5 = st.columns([2, 1, 0.5, 1, 2])
 with col2:
-    if st.button("📤 Enviar", on_click=enviar_mensagem, use_container_width=True):
+    if st.button("Enviar", on_click=enviar_mensagem, use_container_width=True):
         pass
 with col4:
-    if st.button("🗑️ Novo Chat", on_click=novo_chat, use_container_width=True):
+    if st.button("Novo Chat", on_click=novo_chat, use_container_width=True):
         pass
 
 # Área do chat
@@ -250,11 +248,9 @@ if st.session_state.historico:
             </div>
             """, unsafe_allow_html=True)
             
-            # Métricas da resposta
-            confianca = item.get('confianca', 0.0)
+            # Obter dados do item
             acao = item.get('acao', 'N/A')
-            qualidade = item.get('qualidade', 'N/A')
-            
+         
             # Ícone baseado na ação
             icone_acao = {
                 'AUTO_RESOLVER': '✅',
@@ -263,26 +259,12 @@ if st.session_state.historico:
                 'ERRO': '❌'
             }.get(acao, '🤖')
             
-            # Cor da confiança
-            if confianca >= 0.8:
-                cor_confianca = '#28a745'  # Verde
-            elif confianca >= 0.6:
-                cor_confianca = '#ffc107'  # Amarelo
-            elif confianca >= 0.4:
-                cor_confianca = '#fd7e14'  # Laranja
-            else:
-                cor_confianca = '#dc3545'  # Vermelho
-            
-            # Mensagem do assistente com métricas
+            # Mensagem do assistente
             st.markdown(f"""
             <div class="chat-message assistant-message">
                 <div>
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                         <strong>{icone_acao} Assistente</strong>
-                        <div style="font-size: 0.8em;">
-                            <span style="color: {cor_confianca};">●</span> {confianca:.0%} confiança | 
-                            <span style="color: #17a2b8;">{qualidade}</span>
-                        </div>
                     </div>
                     {item['resposta']}
                 </div>
@@ -305,7 +287,7 @@ else:
     # Tela inicial quando não há mensagens
     st.markdown("""
     <div style="text-align: center; padding: 3rem; color: #a0a0a0;">
-        <h3>� Integrador de Dados</h3>
+        <h3>🎲 Integrador de Dados</h3>
         <p>Digite uma pergunta técnica sobre procedures, estruturas de dados ou integração.</p>
         <p>💡 <em>Respostas diretas e técnicas para suas consultas de dados.</em></p>
     </div>

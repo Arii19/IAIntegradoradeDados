@@ -14,6 +14,7 @@ from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langgraph.graph import StateGraph, START, END
+import pymupdf4llm
 
 # =========================
 # Configurações e Logging
@@ -54,7 +55,6 @@ def log_interacao(pergunta: str, resposta: dict, acao: str):
             "timestamp": datetime.now().isoformat(),
             "pergunta": pergunta[:200],  # Limitar tamanho
             "acao": acao,
-            "confianca": resposta.get("confianca_geral", 0.0),
             "categoria": resposta.get("categoria", "N/A"),
             "sucesso": acao == "AUTO_RESOLVER"
         }
@@ -67,8 +67,7 @@ TRIAGEM_PROMPT = (
     "{\n"
     '  \"decisao\": \"AUTO_RESOLVER\" | \"PEDIR_INFO\",\n'
     '  \"urgencia\": \"BAIXA\" | \"MEDIA\" | \"ALTA\",\n'
-    '  \"categoria\": \"RH\" | \"TI\" | \"FINANCEIRO\" | \"OPERACIONAL\" | \"GERAL\",\n'
-    '  \"confianca\": 0.0-1.0\n'
+    '  \"categoria\": \"ETL\" | \"TI\" | \"DADOS\" | \"SQL\" | \"GERAL\"\n'
     "}\n\n"
     "**REGRAS PRINCIPAIS:**\n"
     "1. SEMPRE prefira AUTO_RESOLVER para perguntas técnicas específicas (procedures, sistemas, processos)\n"
@@ -94,12 +93,12 @@ def detectar_categoria_inteligente(pergunta: str) -> str:
                         "código", "aplicação", "banco", "dados"],
             "peso_base": 0
         },
-        "RH": {
-            "palavras": ["salário", "férias", "benefício", "contrato", "admissão", "demissão", "funcionário", "colaborador", "pagamento", "folha"],
+        "ETL": {
+            "palavras": ["extração", "transformação", "carga", "pipeline", "integração", "migração", "processamento", "batch", "streaming", "warehouse"],
             "peso_base": 0
         },
-        "FINANCEIRO": {
-            "palavras": ["reembolso", "nota fiscal", "despesa", "orçamento", "compra", "pagamento", "fatura", "custo"],
+        "DADOS": {
+            "palavras": ["database", "tabela", "consulta", "relatório", "análise", "dashboard", "indicador", "métrica", "kpi", "business intelligence"],
             "peso_base": 0
         }
     }
@@ -154,27 +153,15 @@ def analisar_fallback(mensagem: str) -> dict:
     palavras_tecnicas = ["int.", "sp_", "procedure", "função", "sistema", "código", "aplicinsumo"]
     
     # SEMPRE tentar resolver, especialmente para perguntas técnicas
-    if any(palavra in mensagem_lower for palavra in palavras_tecnicas):
-        decisao = "AUTO_RESOLVER"
-        confianca = 0.8  # Alta confiança para perguntas técnicas
-    elif any(palavra in mensagem_lower for palavra in palavras_info) and len(mensagem.split()) > 2:
-        decisao = "AUTO_RESOLVER"
-        confianca = 0.7
-    elif len(mensagem.split()) > 3:  # Se tem conteúdo suficiente, tentar resolver
-        decisao = "AUTO_RESOLVER" 
-        confianca = 0.6
-    else:
-        decisao = "AUTO_RESOLVER"  # Mudei de PEDIR_INFO para AUTO_RESOLVER
-        confianca = 0.5  # Aumentei a confiança mínima
+    decisao = "AUTO_RESOLVER"
     
     urgencia = "ALTA" if any(palavra in mensagem_lower for palavra in palavras_urgentes) else "MEDIA"
     
     return {
         "decisao": decisao,
         "urgencia": urgencia,
-        "confianca": confianca,
         "categoria": "GERAL",
-        "campos_faltantes": [],  # Removido condição de campos faltantes
+        "campos_faltantes": [],
         "palavras_chave": [palavra for palavra in palavras_info if palavra in mensagem_lower],
         "contexto_detectado": "Análise de fallback - sempre tenta resolver",
         "tecnica_detectada": any(palavra in mensagem_lower for palavra in palavras_tecnicas)
@@ -215,23 +202,9 @@ def triagem(mensagem: str):
         resultado["categoria"] = categoria_detectada
         resultado["sentimento"] = sentimento
         
-        # Validação e enriquecimento dos dados
-        if "confianca" not in resultado:
-            resultado["confianca"] = 0.5
-        
         # Ajustar decisão baseada no sentimento
         if sentimento["tom"] == "urgente_frustrado" and resultado["urgencia"] not in ["ALTA", "CRITICA"]:
             resultado["urgencia"] = "ALTA"
-            
-        if sentimento["frustacao"] and resultado["decisao"] == "AUTO_RESOLVER":
-            # Se pessoa está frustrada, pode ser melhor abrir chamado
-            resultado["confianca"] = max(0.3, resultado["confianca"] - 0.2)
-        
-        # Ajustar decisão baseada na confiança - mais permissivo
-        if resultado["confianca"] < 0.2:  # Só vai para PEDIR_INFO se muito baixa
-            resultado["decisao"] = "PEDIR_INFO"
-        elif resultado["confianca"] > 0.6 and resultado["decisao"] == "PEDIR_INFO":  # Mais permissivo
-            resultado["decisao"] = "AUTO_RESOLVER"
             
         # Detectar palavras-chave críticas
         palavras_criticas = ["urgente", "crítico", "bloqueado", "parado", "emergência", "falha", "erro"]
@@ -258,10 +231,11 @@ def triagem(mensagem: str):
 docs = []
 
 # Carregar documentos com melhor tratamento de erro
-pdf_path = Path("docs")
+docs_path = Path("docs")
 
-if pdf_path.exists():
-    for n in pdf_path.glob("*.pdf"):
+if docs_path.exists():
+    # Carregar PDFs
+    for n in docs_path.glob("*.pdf"):
         try:
             loader = PyMuPDFLoader(str(n))
             doc_pages = loader.load()
@@ -271,13 +245,36 @@ if pdf_path.exists():
                 page.metadata.update({
                     "filename": n.name,
                     "file_size": n.stat().st_size,
-                    "content_type": "policy_document"
+                    "content_type": "pdf_document"
                 })
             
             docs.extend(doc_pages)
-            print(f"[OK] Carregado: {n.name} ({len(doc_pages)} páginas)")
+            print(f"[OK] PDF Carregado: {n.name} ({len(doc_pages)} páginas)")
         except Exception as e:
-            print(f"[ERRO] Erro ao carregar {n.name}: {e}")
+            print(f"[ERRO] Erro ao carregar PDF {n.name}: {e}")
+    
+    # Carregar Markdown files
+    for n in docs_path.glob("*.md"):
+        try:
+            with open(n, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Criar documento único para markdown
+            from langchain_core.documents import Document
+            md_doc = Document(
+                page_content=content,
+                metadata={
+                    "filename": n.name,
+                    "file_size": n.stat().st_size,
+                    "content_type": "markdown_document",
+                    "source": str(n)
+                }
+            )
+            
+            docs.append(md_doc)
+            print(f"[OK] Markdown Carregado: {n.name} ({len(content)} caracteres)")
+        except Exception as e:
+            print(f"[ERRO] Erro ao carregar Markdown {n.name}: {e}")
 else:
     print("[AVISO] Pasta 'docs' não encontrada. Nenhum documento carregado.")
 
@@ -354,36 +351,6 @@ def remover_duplicatas_docs(docs_list):
     
     return docs_unicos
 
-def calcular_confianca_resposta(pergunta: str, resposta: str, docs: list) -> float:
-    """Calcula a confiança da resposta baseado em vários fatores"""
-    confianca = 0.5  # Base
-    
-    # Fator 1: Tamanho da resposta (respostas muito curtas são suspeitas)
-    if len(resposta.split()) > 10:
-        confianca += 0.1
-    if len(resposta.split()) > 30:
-        confianca += 0.1
-    
-    # Fator 2: Número de documentos encontrados
-    if len(docs) >= 3:
-        confianca += 0.2
-    elif len(docs) >= 2:
-        confianca += 0.1
-    
-    # Fator 3: Presença de palavras-chave da pergunta na resposta
-    palavras_pergunta = set(pergunta.lower().split())
-    palavras_resposta = set(resposta.lower().split())
-    overlap = len(palavras_pergunta.intersection(palavras_resposta))
-    if overlap > 2:
-        confianca += 0.1
-    
-    # Fator 4: Indicadores de incerteza na resposta
-    indicadores_incerteza = ["talvez", "pode ser", "não tenho certeza", "possivelmente"]
-    if any(ind in resposta.lower() for ind in indicadores_incerteza):
-        confianca -= 0.2
-    
-    return min(1.0, max(0.0, confianca))
-
 def criar_citacoes_melhoradas(docs: list) -> list[dict]:
     """Cria citações mais informativas"""
     citacoes = []
@@ -404,10 +371,9 @@ def criar_citacoes_melhoradas(docs: list) -> list[dict]:
     
     return citacoes
 
-def validar_e_corrigir_resposta(resposta: str, pergunta: str, docs: list) -> tuple[str, float]:
+def validar_e_corrigir_resposta(resposta: str, pergunta: str, docs: list) -> str:
     """Valida e corrige a resposta do RAG - PRIORIZANDO MÁXIMA CONCISÃO"""
     resposta_original = resposta
-    confianca_base = calcular_confianca_resposta(pergunta, resposta, docs)
     
     # Verificações de qualidade com foco em concisão
     problemas = []
@@ -416,7 +382,6 @@ def validar_e_corrigir_resposta(resposta: str, pergunta: str, docs: list) -> tup
     palavras = len(resposta.split())
     if palavras > 150:  # Reduzido de 200 para 150
         problemas.append("resposta_muito_longa")
-        confianca_base -= 0.2
         # Tentar encurtar drasticamente
         if docs:
             prompt_resumir = f"""
@@ -432,18 +397,12 @@ def validar_e_corrigir_resposta(resposta: str, pergunta: str, docs: list) -> tup
                 resposta_nova = resposta_resumida.content.strip()
                 if len(resposta_nova.split()) < 80:  # Aceitar se ficar menor que 80 palavras
                     resposta = resposta_nova
-                    confianca_base += 0.2  # Bonificar por encurtar
             except Exception:
                 pass
     elif palavras > 100:  # Moderadamente longa
         problemas.append("resposta_longa")
-        confianca_base -= 0.1
     elif palavras < 10:  # Muito curta
         problemas.append("resposta_muito_curta")
-        confianca_base -= 0.15
-    else:
-        # Bonificar respostas concisas (10-100 palavras)
-        confianca_base += 0.1
     
     # 2. Detectar introduções desnecessárias
     introducoes_ruins = [
@@ -453,7 +412,6 @@ def validar_e_corrigir_resposta(resposta: str, pergunta: str, docs: list) -> tup
     inicio_resposta = resposta[:100].lower()
     if any(intro in inicio_resposta for intro in introducoes_ruins):
         problemas.append("introducao_desnecessaria")
-        confianca_base -= 0.15
         # Tentar remover introdução
         linhas = resposta.split('\n')
         if len(linhas) > 1:
@@ -461,23 +419,18 @@ def validar_e_corrigir_resposta(resposta: str, pergunta: str, docs: list) -> tup
             resposta_sem_intro = '\n'.join(linhas[1:]).strip()
             if len(resposta_sem_intro) > 20:
                 resposta = resposta_sem_intro
-                confianca_base += 0.1
     
     # 3. Resposta genérica demais
     palavras_genericas = ["talvez", "pode ser", "geralmente", "normalmente", "às vezes"]
     if sum(1 for palavra in palavras_genericas if palavra in resposta.lower()) > 1:
         problemas.append("resposta_generica")
-        confianca_base -= 0.1
     
-    # Garantir confiança mínima e máxima
-    confianca_final = max(0.0, min(1.0, confianca_base))
-    
-    return resposta, confianca_final
+    return resposta
 
 def gerar_resposta_sem_documentos(pergunta: str) -> str:
     """Gera uma resposta útil mas CONCISA mesmo sem documentos específicos"""
     
-    prompt = f"""Você é um Integrador de dados da Carraro Desenvolvimento.
+    prompt = f"""Você é um Integrador de dados e desenvolvedor ETL da empresa SmartBreeder.
 
 INSTRUÇÃO: Forneça uma resposta BREVE e TÉCNICA para a pergunta.
 
@@ -503,7 +456,6 @@ def perguntar_politica_RAG(pergunta: str) -> dict:
             "answer": "Sistema de documentos não disponível no momento.",
             "citacoes": [],
             "contexto_encontrado": False,
-            "confianca": 0.0,
             "estrategia_usada": "nenhuma"
         }
 
@@ -535,7 +487,6 @@ def perguntar_politica_RAG(pergunta: str) -> dict:
             "answer": resposta_generica,
             "citacoes": [],
             "contexto_encontrado": False,
-            "confianca": 0.4,  # Confiança moderada para respostas genéricas
             "estrategia_usada": "resposta_generica"
         }
 
@@ -545,12 +496,12 @@ def perguntar_politica_RAG(pergunta: str) -> dict:
     contexto = "\n\n".join(d.page_content for d in docs_unicos[:4])  # Limitar contexto
     
     # Prompt mais útil e CONCISO
-    prompt = f"""Você é um Integrador de dados da Carraro Desenvolvimento.
+    prompt = f"""Você é um Integrador de dados e desenvolvedor ETL da empresa SmartBreeder.
 
 INSTRUÇÕES IMPORTANTES:
 - Use o contexto fornecido como base principal
 - SEJA CONCISO E DIRETO - respostas de no máximo 2-3 parágrafos
-- Vá direto ao ponto, sem rodeios
+- Vá direto ao ponto, mas aplique a llm para passar as respostas, mas não se esqueça de usar os termos técnicos e depois faça um resumo curto explicando de forma mais simples
 - Use linguagem técnica mas clara
 - Evite introduções longas ("Olá! Como Especialista...")
 - PARE quando der a informação principal - não detalhe demais
@@ -566,18 +517,14 @@ Resposta técnica e direta:"""
     resposta = llm_triagem.invoke([HumanMessage(content=prompt)])
     txt = (resposta.content or "").strip()
 
-    # Calcular confiança baseada no contexto encontrado
-    confianca_inicial = calcular_confianca_resposta(pergunta, txt, docs_unicos)
-    
     # Validar e potencialmente corrigir a resposta
-    resposta_final, confianca_final = validar_e_corrigir_resposta(txt, pergunta, docs_unicos)
+    resposta_final = validar_e_corrigir_resposta(txt, pergunta, docs_unicos)
     
-    if "não disponível" in resposta_final.lower() or "não sei" in resposta_final.lower() or confianca_final < 0.3:
+    if "não disponível" in resposta_final.lower() or "não sei" in resposta_final.lower():
         return {
-            "answer": "Informação não encontrada nos documentos. Recomendo abrir um chamado para esclarecimentos específicos.",
+            "answer": "Informação não encontrada nos documentos. Recomendo contatar um integrador esclarecimentos específicos.",
             "citacoes": [],
             "contexto_encontrado": False,
-            "confianca": confianca_final,
             "estrategia_usada": estrategia,
             "melhorada": False
         }
@@ -586,7 +533,6 @@ Resposta técnica e direta:"""
         "answer": resposta_final,
         "citacoes": criar_citacoes_melhoradas(docs_unicos),
         "contexto_encontrado": True,
-        "confianca": confianca_final,
         "estrategia_usada": estrategia,
         "melhorada": resposta_final != txt  # Indica se foi melhorada
     }
@@ -601,7 +547,6 @@ class AgentState(TypedDict, total=False):
     citacoes: list[dict]
     rag_sucesso: bool
     acao_final: str
-    confianca_geral: float
     historico_tentativas: list[str]
     categoria: str
 
@@ -610,33 +555,24 @@ def node_triagem(state: AgentState) -> AgentState:
     return {
         "triagem": resultado_triagem,
         "categoria": resultado_triagem.get("categoria", "GERAL"),
-        "confianca_geral": resultado_triagem.get("confianca", 0.5),
         "historico_tentativas": ["triagem"]
     }
 
 def node_auto_resolver(state: AgentState) -> AgentState:
     resposta_rag = perguntar_politica_RAG(state["pergunta"])
     
-    # Combinar confiança da triagem com confiança do RAG
-    confianca_triagem = state.get("confianca_geral", 0.5)
-    confianca_rag = resposta_rag.get("confianca", 0.0)
-    confianca_final = (confianca_triagem + confianca_rag) / 2
-    
     update: AgentState = {
         "resposta": resposta_rag["answer"],
         "citacoes": resposta_rag.get("citacoes", []),
         "rag_sucesso": resposta_rag["contexto_encontrado"],
-        "confianca_geral": confianca_final,
         "historico_tentativas": state.get("historico_tentativas", []) + ["auto_resolver"]
     }
     
-    # Decisão mais inteligente baseada em confiança
-    if resposta_rag["contexto_encontrado"] and confianca_final >= 0.6:
+    # Decisão baseada no sucesso do RAG
+    if resposta_rag["contexto_encontrado"]:
         update["acao_final"] = "AUTO_RESOLVER"
-    elif resposta_rag["contexto_encontrado"] and confianca_final >= 0.4:
-        # Resposta com baixa confiança - adicionar aviso
-        update["resposta"] = f"⚠️ **Resposta com confiança moderada ({confianca_final:.1%})**\n\n{resposta_rag['answer']}\n\n*Recomenda-se confirmar esta informação abrindo um chamado se necessário.*"
-        update["acao_final"] = "AUTO_RESOLVER"
+    else:
+        update["acao_final"] = "AUTO_RESOLVER"  # Sempre tenta resolver
     
     return update
 
@@ -661,7 +597,6 @@ def decidir_pos_triagem(state: AgentState) -> str:
         return "info"
 
 def decidir_pos_auto_resolver(state: AgentState) -> str:
-    confianca = state.get("confianca_geral", 0.0)
     rag_sucesso = state.get("rag_sucesso", False)
     tentativas = len(state.get("historico_tentativas", []))
     
@@ -695,32 +630,33 @@ workflow.add_edge("pedir_info", END)
 
 grafo = workflow.compile()
 
-def processar_pergunta(pergunta: str) -> dict:
+def processar_pergunta(pergunta: str, historico_conversa: list = None) -> dict:
     """
     Função principal melhorada para processar perguntas
-    Retorna resposta estruturada com métricas de qualidade
+    Retorna resposta estruturada
     """
     try:
         if not pergunta.strip():
             return {
-                "resposta": "Por favor, faça uma pergunta específica sobre políticas ou procedimentos da empresa.",
+                "resposta": "Por favor, faça uma pergunta específica sobre procedimentos da integração.",
                 "citacoes": [],
                 "acao_final": "PEDIR_INFO",
-                "confianca_geral": 0.0,
                 "categoria": "GERAL",
                 "melhorada": False,
                 "feedback_id": None
             }
         
+        # Analisar contexto do histórico para perguntas vagas
+        pergunta_contextualizada = analisar_contexto_historico(pergunta, historico_conversa)
+        
         # Executar o workflow
-        resultado = grafo.invoke({"pergunta": pergunta.strip()})
+        resultado = grafo.invoke({"pergunta": pergunta_contextualizada})
         
         # Log da interação
         log_interacao(pergunta, resultado, resultado.get("acao_final", "ERRO"))
         
         # Enriquecer resposta com metadados
         resultado["timestamp"] = datetime.now().isoformat()
-        resultado["qualidade_resposta"] = avaliar_qualidade_resposta(resultado)
         
         # Verificar se precisa de ajustes baseado em feedback histórico
         ajustes = verificar_ajustes_necessarios(pergunta, resultado)
@@ -732,15 +668,82 @@ def processar_pergunta(pergunta: str) -> dict:
     except Exception as e:
         logger.error(f"Erro ao processar pergunta: {e}")
         return {
-            "resposta": "Ocorreu um erro interno. Por favor, tente novamente ou abra um chamado.",
+            "resposta": "Ocorreu um erro interno. Por favor, tente novamente ou contate o suporte.",
             "citacoes": [],
             "acao_final": "ERRO",
-            "confianca_geral": 0.0,
             "categoria": "ERRO",
             "erro": str(e),
             "melhorada": False,
             "feedback_id": None
         }
+
+def analisar_contexto_historico(pergunta: str, historico_conversa: list = None) -> str:
+    """Analisa o contexto do histórico para enriquecer perguntas vagas"""
+    if not historico_conversa or len(historico_conversa) == 0:
+        return pergunta
+    
+    pergunta_lower = pergunta.lower().strip()
+    
+    # Detectar perguntas que fazem referência ao contexto anterior
+    referencias_contexto = [
+        "origem dos dados", "origem", "onde vem", "fonte", 
+        "qual a origem", "de onde vem", "procedência",
+        "como é feito", "como funciona", "processo",
+        "mais detalhes", "especificamente", "detalhe"
+    ]
+    
+    # Palavras que indicam referência à conversa anterior
+    referencias_anteriores = [
+        "dessa", "desse", "desta", "deste", "nisso", "isso",
+        "anterior", "que falamos", "mencionado", "citado"
+    ]
+    
+    tem_referencia_contexto = any(ref in pergunta_lower for ref in referencias_contexto)
+    tem_referencia_anterior = any(ref in pergunta_lower for ref in referencias_anteriores)
+    
+    # Se a pergunta é vaga mas tem referência ao contexto ou à conversa anterior
+    if (tem_referencia_contexto or tem_referencia_anterior or len(pergunta.split()) <= 6):
+        # Pegar a última mensagem que teve sucesso (resposta técnica)
+        ultima_resposta_tecnica = None
+        ultimo_assunto = None
+        
+        for item in reversed(historico_conversa[-3:]):  # Últimas 3 mensagens
+            if item.get("acao") == "AUTO_RESOLVER" and item.get("citacoes"):
+                ultima_resposta_tecnica = item.get("resposta", "")
+                ultimo_assunto = item.get("pergunta", "")
+                break
+        
+        if ultima_resposta_tecnica and ultimo_assunto:
+            # Extrair palavras-chave técnicas da conversa anterior
+            palavras_chave_anteriores = extrair_palavras_chave_tecnicas(ultimo_assunto, ultima_resposta_tecnica)
+            
+            # Contextualizar a pergunta atual
+            if palavras_chave_anteriores:
+                pergunta_contextualizada = f"{pergunta} (contexto: {ultimo_assunto[:100]}... - palavras-chave: {', '.join(palavras_chave_anteriores[:3])})"
+                logger.info(f"Pergunta contextualizada: {pergunta} -> {pergunta_contextualizada}")
+                return pergunta_contextualizada
+    
+    return pergunta
+
+def extrair_palavras_chave_tecnicas(pergunta_anterior: str, resposta_anterior: str) -> list:
+    """Extrai palavras-chave técnicas da conversa anterior"""
+    texto_completo = f"{pergunta_anterior} {resposta_anterior}".lower()
+    
+    # Palavras-chave técnicas relevantes
+    palavras_tecnicas = [
+        "int.int_aplicinsumoagric", "aplicinsumoagric", "procedure", "tabela",
+        "sp_des_int_aplicinsumoagric", "sp_at_int_aplicinsumoagric",
+        "temp_des_aplicinsumoagric", "tblf_transfere_fazendas",
+        "erp", "sistema", "dados", "origem", "fonte", "normalização",
+        "consolidação", "regras de negócio", "fazenda", "insumo", "agrícola"
+    ]
+    
+    palavras_encontradas = []
+    for palavra in palavras_tecnicas:
+        if palavra in texto_completo:
+            palavras_encontradas.append(palavra)
+    
+    return palavras_encontradas[:5]  # Máximo 5 palavras-chave
 
 def verificar_ajustes_necessarios(pergunta: str, resultado: dict) -> list:
     """Verifica se são necessários ajustes baseado no histórico"""
@@ -751,26 +754,7 @@ def verificar_ajustes_necessarios(pergunta: str, resultado: dict) -> list:
     
     return ajustes
 
-def avaliar_qualidade_resposta(resultado: dict) -> str:
-    """Avalia a qualidade da resposta baseado em métricas"""
-    confianca = resultado.get("confianca_geral", 0.0)
-    tem_citacoes = len(resultado.get("citacoes", [])) > 0
-    acao = resultado.get("acao_final", "")
-    
-    if acao == "AUTO_RESOLVER" and confianca >= 0.8 and tem_citacoes:
-        return "EXCELENTE"
-    elif acao == "AUTO_RESOLVER" and confianca >= 0.6:
-        return "BOA"
-    elif acao == "AUTO_RESOLVER" and confianca >= 0.4:
-        return "MODERADA"
-    elif acao == "AUTO_RESOLVER":
-        return "BASICA"  # Resolveu mas com baixa confiança
-    elif acao == "PEDIR_INFO":
-        return "INFORMACAO_INSUFICIENTE"
-    else:
-        return "BAIXA"
-
 # Função para compatibilidade com o app.py existente
-def processar_mensagem(mensagem: str) -> dict:
+def processar_mensagem(mensagem: str, historico_conversa: list = None) -> dict:
     """Wrapper para compatibilidade com interface existente"""
-    return processar_pergunta(mensagem)
+    return processar_pergunta(mensagem, historico_conversa)
