@@ -32,26 +32,33 @@ llm_triagem = None
 def get_llm():
     """Lazy initialization of LLM"""
     global llm_triagem
-    if llm_triagem is None:
-        if not api_key:
-            raise ValueError("API_KEY not found in environment variables")
+    # Forçar nova inicialização para limpar cache
+    llm_triagem = None
+    
+    if not api_key:
+        raise ValueError("API_KEY not found in environment variables")
+    
+    try:
+        # Configuração mais simples e limpa
+        llm_triagem = ChatGoogleGenerativeAI(
+            model="models/gemma-3-27b-it",
+            temperature=0.1,
+            google_api_key=api_key
+        )
+        logger.info("LLM inicializado com sucesso")
+    except Exception as e:
+        logger.error(f"Erro ao inicializar LLM: {e}")
+        # Tentar configuração ainda mais básica
         try:
             llm_triagem = ChatGoogleGenerativeAI(
                 model="models/gemma-3-27b-it",
-                temperature=0.9,  # Mais baixa para respostas mais consistentes
-                google_api_key=api_key,
-                # Removendo parâmetros que podem causar conflito
-                request_timeout=60,
-                # max_retries removido para evitar TypeError
-            )
-        except Exception as e:
-            logger.error(f"Erro ao inicializar LLM: {e}")
-            # Fallback para configuração mais simples
-            llm_triagem = ChatGoogleGenerativeAI(
-                model="models/gemma-3-27b-it",
-                temperature=0.1,
                 google_api_key=api_key
             )
+            logger.info("LLM inicializado com configuração básica")
+        except Exception as e2:
+            logger.error(f"Erro crítico ao inicializar LLM: {e2}")
+            raise e2
+    
     return llm_triagem
 
 # =========================
@@ -89,17 +96,26 @@ def cache_resposta_llm(prompt_hash: str, prompt: str):
 
 def limpar_cache():
     """Limpa todos os caches - útil para batch processing"""
-    global CACHE_RESPOSTAS, CACHE_RAG, CACHE_LLM
+    global CACHE_RESPOSTAS, CACHE_RAG, CACHE_LLM, llm_triagem
     CACHE_RESPOSTAS.clear()
     CACHE_RAG.clear() 
     CACHE_LLM.clear()
+    
+    # Limpar também o LLM para forçar nova inicialização
+    llm_triagem = None
     
     # Reset stats
     CACHE_STATS['hits'] = 0
     CACHE_STATS['misses'] = 0
     CACHE_STATS['total_saves'] = 0
     
-    logger.info("Cache limpo para novo processamento em lote")
+    logger.info("Cache limpo para novo processamento em lote (incluindo LLM)")
+
+def resetar_llm():
+    """Força reset do LLM para limpar configurações antigas"""
+    global llm_triagem
+    llm_triagem = None
+    logger.info("LLM resetado - próxima chamada criará nova instância")
 
 def get_cache_stats():
     """Retorna estatísticas do cache"""
@@ -356,6 +372,51 @@ def triagem(mensagem: str):
         return resultado_fallback
 
 # =========================
+# Sistema de busca textual alternativo (quando embeddings não estão disponíveis)
+# =========================
+
+def buscar_texto_simples(pergunta: str, docs_list: list) -> list:
+    """Busca textual simples quando embeddings não estão disponíveis"""
+    if not docs_list:
+        return []
+    
+    pergunta_lower = pergunta.lower()
+    palavras_busca = pergunta_lower.split()
+    
+    # Palavras-chave específicas para melhorar a busca
+    palavras_expandidas = []
+    for palavra in palavras_busca:
+        palavras_expandidas.append(palavra)
+        # Adicionar variações comuns
+        if "aplicinsumo" in palavra:
+            palavras_expandidas.extend(["insumo", "agric", "aplicação"])
+        elif "int." in palavra:
+            palavras_expandidas.extend(["procedure", "função", "sp_"])
+        elif "origem" in palavra:
+            palavras_expandidas.extend(["fonte", "erp", "sistema", "dados"])
+    
+    docs_relevantes = []
+    for doc in docs_list:
+        conteudo_lower = doc.page_content.lower()
+        score = 0
+        
+        # Pontuar baseado em matches de palavras
+        for palavra in palavras_expandidas:
+            if palavra in conteudo_lower:
+                score += conteudo_lower.count(palavra)
+        
+        # Bonus para matches exatos de frases importantes
+        if "int.int_aplicinsumoagric" in conteudo_lower and ("aplicinsumo" in pergunta_lower or "int." in pergunta_lower):
+            score += 10
+        
+        if score > 0:
+            docs_relevantes.append((doc, score))
+    
+    # Ordenar por relevância e retornar os melhores
+    docs_relevantes.sort(key=lambda x: x[1], reverse=True)
+    return [doc for doc, score in docs_relevantes[:6]]  # Top 6 documentos
+
+# =========================
 # RAG Avançado com múltiplas estratégias
 # =========================
 docs = []
@@ -443,6 +504,7 @@ if docs:
             )
         except Exception as e:
             print(f"[AVISO] Erro ao inicializar embeddings: {e}")
+            print(f"[INFO] Sistema entrará em modo fallback com busca textual")
             retriever = None
             retriever_keywords = None
     else:
@@ -595,13 +657,19 @@ def perguntar_politica_RAG(pergunta: str) -> dict:
         logger.info(f"[RAG] Iniciando busca para: {pergunta}")
         
         if not retriever:
-            logger.warning("[RAG] Retriever não disponível")
-            return {
-                "answer": "Sistema de documentos não disponível no momento.",
-                "citacoes": [],
-                "contexto_encontrado": False,
-                "estrategia_usada": "nenhuma"
-            }
+            logger.warning("[RAG] Retriever não disponível - tentando busca textual")
+            if docs:  # Se temos documentos carregados, usar busca textual
+                docs_relacionados = buscar_texto_simples(pergunta, docs)
+                estrategia = "busca_textual_simples"
+                logger.info(f"[RAG] Busca textual encontrou {len(docs_relacionados)} documentos")
+            else:
+                logger.warning("[RAG] Nenhum documento disponível")
+                return {
+                    "answer": "Sistema de documentos não disponível no momento.",
+                    "citacoes": [],
+                    "contexto_encontrado": False,
+                    "estrategia_usada": "nenhuma"
+                }
 
         # Estratégia 1: Busca semântica principal
         logger.info("[RAG] Executando busca semântica principal")
@@ -644,23 +712,50 @@ def perguntar_politica_RAG(pergunta: str) -> dict:
         contexto = "\n\n".join(d.page_content for d in docs_unicos[:4])  # Limitar contexto
     
         # Prompt mais útil e CONCISO
-        prompt = f"""Você é um Integrador de dados e desenvolvedor ETL da empresa SmartBreeder.
+        prompt = f"""🧠 Prompt: “Desenvolvedor ETL Agroindustrial (usinas de cana-de-açúcar)”
+                        Você deve simular um desenvolvedor ETL pleno/sênior especializado em integração de dados entre sistemas ERP e bancos relacionais, com forte atuação no setor agroindustrial, especialmente em usinas de cana-de-açúcar.
+                        Seu papel é projetar, otimizar e automatizar fluxos de dados complexos, garantindo qualidade, performance e rastreabilidade das informações.
+                        🧩 Contexto do domínio
+                        Você trabalha com dados de produção agrícola, insumos, operações mecanizadas, colheita, transporte, industrialização e manutenção de equipamentos agrícolas.
+                        Os dados vêm de diversos ERPs e sistemas satélites (TOTVS, SAP, PIMS, Solinftec, Trimble, JDLink, entre outros) e precisam ser integrados em um Data Warehouse corporativo para análises de produtividade e custos.
+                        💻 Stack técnica principal
+                        SQL Server (T-SQL): desenvolvimento de procedures, funções, views, staging e transformação de dados.
+                        Python + Apache Airflow: orquestração, agendamento e monitoramento de pipelines ETL/ELT.
+                        APIs REST e SOAP: consumo e integração de dados externos (ERP, sensores, sistemas agrícolas).
+                        Arquivos CSV, XML, JSON, Excel: tratamento e padronização de dados.
+                        Controle de versionamento (Git) e boas práticas DevOps para pipelines de dados.
+                        🧰 Diretrizes de comportamento
+                        Sempre explique a lógica do fluxo de dados antes de apresentar o código.
+                        Use boas práticas de engenharia de dados (tratamento de nulos, logs, idempotência, versionamento).
+                        Respeite padrões de nomeação corporativa (ex: STG_, DW_, DIM_, FAT_, SP_).
+                        Assegure que os processos sejam escaláveis, auditáveis e reexecutáveis.
+                        Utilize comentários claros no código para fácil manutenção.
+                        Sempre valide a consistência das chaves (PK/FK) e integridade referencial dos dados transformados.
+                        Quando sugerir código, use sintaxe realista e pronta para execução (sem placeholders genéricos, a menos que explicitamente necessário).
+                        🧾 Exemplos de entregas esperadas
+                        Scripts T-SQL para criação de pipelines de integração entre sistemas agrícolas e ERP.
+                        DAGs do Airflow para orquestrar extração e carga diária dos dados de produção.
+                        Scripts Python para consumir APIs de sensores de campo e salvar no Data Lake.
+                        Modelos de staging e DW para consolidar dados de colheita e custo operacional.
+                        Estratégias para controle de incremental load, logs e retry de jobs.
+                        🎯 Objetivo final
+                        Atuar como especialista de integração de dados do agronegócio, com foco em eficiência, automação e qualidade das informações que alimentam painéis e relatórios estratégicos da usina.
 
-INSTRUÇÕES IMPORTANTES:
-- Use o contexto fornecido como base principal
-- SEJA CONCISO E DIRETO - respostas de no máximo 2-3 parágrafos
-- Vá direto ao ponto, mas aplique a llm para passar as respostas, mas não se esqueça de usar os termos técnicos e depois faça um resumo curto explicando de forma mais simples
-- Use linguagem técnica mas clara
-- Evite introduções longas ("Olá! Como Especialista...")
-- PARE quando der a informação principal - não detalhe demais
-- FOQUE NO QUE O USUÁRIO REALMENTE QUER SABER
+                        INSTRUÇÕES IMPORTANTES:
+                        - Use o contexto fornecido como base principal
+                        - SEJA CONCISO E DIRETO - respostas de no máximo 2-3 parágrafos
+                        - Vá direto ao ponto, mas aplique a llm para passar as respostas, mas não se esqueça de usar os termos técnicos e depois faça um resumo curto explicando de forma mais simples
+                        - Use linguagem técnica mas clara
+                        - Evite introduções longas ("Olá! Como Especialista...")
+                        - PARE quando der a informação principal - não detalhe demais
+                        - FOQUE NO QUE O USUÁRIO REALMENTE QUER SABER
 
-PERGUNTA: {pergunta}
+                        PERGUNTA: {pergunta}
 
-CONTEXTO DISPONÍVEL:
-{contexto}
+                        CONTEXTO DISPONÍVEL:
+                        {contexto}
 
-Resposta técnica e direta:"""
+                        Resposta técnica e direta:"""
 
         logger.info("[RAG] Executando prompt com LLM")
         resposta = get_llm().invoke([HumanMessage(content=prompt)])
@@ -811,6 +906,14 @@ def processar_pergunta(pergunta: str, historico_conversa: list = None) -> dict:
     try:
         logger.info(f"Iniciando processamento da pergunta: {pergunta}")
         
+        # Garantir que o LLM está devidamente inicializado
+        try:
+            get_llm()
+        except Exception as e:
+            logger.error(f"Erro ao inicializar LLM: {e}")
+            resetar_llm()  # Reset e tentar novamente
+            get_llm()
+        
         if not pergunta.strip():
             return {
                 "resposta": "Por favor, faça uma pergunta específica sobre procedimentos da integração.",
@@ -834,18 +937,16 @@ def processar_pergunta(pergunta: str, historico_conversa: list = None) -> dict:
                 "feedback_id": None
             }
         
-        # Verificar se o retriever está inicializado
+        # Verificar se o retriever está inicializado - MODO FALLBACK SE NECESSÁRIO
         if retriever is None:
-            logger.error("Sistema de documentos não inicializado")
-            return {
-                "resposta": "Sistema de documentos não disponível. Verifique se os documentos foram carregados corretamente.",
-                "citacoes": [],
-                "acao_final": "ERRO",
-                "categoria": "ERRO",
-                "erro": "Retriever não inicializado",
-                "melhorada": False,
-                "feedback_id": None
-            }
+            logger.warning("Sistema de embeddings não disponível - usando modo inteligente")
+            # Em vez de fallback básico, tentar busca textual se temos documentos
+            if docs:
+                logger.info("Tentando busca textual nos documentos carregados")
+                return processar_pergunta_com_busca_textual(pergunta, historico_conversa)
+            else:
+                logger.warning("Nenhum documento disponível - usando modo fallback básico")
+                return processar_pergunta_fallback(pergunta, historico_conversa)
         
         # Analisar contexto do histórico para perguntas vagas
         logger.info("Analisando contexto do histórico")
@@ -1010,6 +1111,131 @@ def verificar_ajustes_necessarios(pergunta: str, resultado: dict) -> list:
     ajustes = []
     
     return ajustes
+
+def processar_pergunta_com_busca_textual(pergunta: str, historico_conversa: list = None) -> dict:
+    """
+    Processamento usando busca textual quando embeddings não estão disponíveis
+    """
+    try:
+        logger.info(f"[BUSCA_TEXTUAL] Processando pergunta: {pergunta}")
+        
+        # Buscar documentos relevantes por texto
+        docs_relacionados = buscar_texto_simples(pergunta, docs)
+        
+        if not docs_relacionados:
+            logger.warning("[BUSCA_TEXTUAL] Nenhum documento relevante encontrado")
+            return processar_pergunta_fallback(pergunta, historico_conversa)
+        
+        logger.info(f"[BUSCA_TEXTUAL] Encontrados {len(docs_relacionados)} documentos relevantes")
+        
+        # Criar contexto com os documentos encontrados
+        contexto = "\n\n".join(d.page_content for d in docs_relacionados[:4])
+        
+        # Prompt específico para busca textual
+        prompt = f"""🧠 Prompt: "Desenvolvedor ETL Agroindustrial (usinas de cana-de-açúcar)"
+Você deve simular um desenvolvedor ETL pleno/sênior especializado em integração de dados entre sistemas ERP e bancos relacionais, com forte atuação no setor agroindustrial, especialmente em usinas de cana-de-açúcar.
+
+💻 Contexto: Sistema de embeddings indisponível - usando busca textual nos documentos.
+
+INSTRUÇÕES IMPORTANTES:
+- Use o contexto fornecido como base principal
+- SEJA CONCISO E DIRETO - respostas de no máximo 2-3 parágrafos
+- Use linguagem técnica mas clara
+- Evite introduções longas
+- FOQUE NO QUE O USUÁRIO REALMENTE QUER SABER
+
+PERGUNTA: {pergunta}
+
+CONTEXTO DISPONÍVEL:
+{contexto}
+
+Resposta técnica e direta:"""
+
+        resposta = get_llm().invoke([HumanMessage(content=prompt)])
+        resposta_texto = (resposta.content or "").strip()
+        
+        # Validar e corrigir resposta
+        resposta_final = validar_e_corrigir_resposta(resposta_texto, pergunta, docs_relacionados)
+        
+        # Adicionar disclaimer sobre busca textual
+        resposta_final += "\n\n🔍 **Nota:** Busca realizada por texto (sistema de embeddings temporariamente indisponível)."
+        
+        return {
+            "resposta": resposta_final,
+            "citacoes": criar_citacoes_melhoradas(docs_relacionados),
+            "acao_final": "AUTO_RESOLVER",
+            "categoria": "GERAL",
+            "melhorada": resposta_final != resposta_texto,
+            "feedback_id": None,
+            "modo": "BUSCA_TEXTUAL",
+            "timestamp": datetime.now().isoformat(),
+            "contexto_encontrado": True
+        }
+        
+    except Exception as e:
+        logger.error(f"[BUSCA_TEXTUAL] Erro: {type(e).__name__}: {str(e)}")
+        return processar_pergunta_fallback(pergunta, historico_conversa)
+
+def processar_pergunta_fallback(pergunta: str, historico_conversa: list = None) -> dict:
+    """
+    Função fallback quando o sistema RAG não está disponível (cota de embeddings excedida)
+    Usa apenas o LLM diretamente com conhecimento básico
+    """
+    try:
+        logger.info(f"[FALLBACK] Processando pergunta sem RAG: {pergunta}")
+        
+        # Prompt básico para responder sem documentos específicos
+        prompt_fallback = f"""🧠 PERSONA: Desenvolvedor ETL Agroindustrial Sênior (Usinas de Cana-de-Açúcar)
+
+Você é um especialista ETL com conhecimento em integração de dados no setor sucroenergético.
+
+⚠️ MODO LIMITADO: Cota de embeddings excedida - sistema funcionando com conhecimento base.
+
+🎯 INSTRUÇÃO: Responda com base no seu conhecimento técnico sobre:
+• Procedures SQL para integração de dados agrícolas (especialmente INT.SP_AT_INT_APLICINSUMOAGRIC)
+• Sistemas ERP (TOTVS, SAP) e integração de dados
+• Aplicação de insumos agrícolas e controle de produção
+• Padrões de ETL no agronegócio
+
+📋 REGRAS:
+• SEJA DIRETO - máximo 2 parágrafos
+• Use termos técnicos seguidos de explicação simples
+• Se não souber detalhes específicos, seja honesto
+• Foque no que o usuário realmente quer saber
+
+PERGUNTA: {pergunta}
+
+Resposta técnica (baseada em conhecimento geral):"""
+
+        resposta = get_llm().invoke([HumanMessage(content=prompt_fallback)])
+        resposta_texto = (resposta.content or "").strip()
+        
+        # Adicionar disclaimer sobre modo limitado
+        resposta_final = f"{resposta_texto}\n\n⚠️ **Nota:** Cota de embeddings excedida. Resposta baseada em conhecimento geral. Para respostas mais precisas, aguarde renovação da cota ou verifique configurações da API."
+        
+        return {
+            "resposta": resposta_final,
+            "citacoes": [],
+            "acao_final": "AUTO_RESOLVER",
+            "categoria": "GERAL",
+            "melhorada": False,
+            "feedback_id": None,
+            "modo": "FALLBACK",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"[FALLBACK] Erro: {type(e).__name__}: {str(e)}")
+        return {
+            "resposta": f"Sistema temporariamente indisponível. Erro: {str(e)}",
+            "citacoes": [],
+            "acao_final": "ERRO",
+            "categoria": "ERRO",
+            "erro": f"Fallback error: {str(e)}",
+            "melhorada": False,
+            "feedback_id": None,
+            "modo": "FALLBACK_ERROR"
+        }
 
 # Função para compatibilidade com o app.py existente
 def processar_mensagem(mensagem: str, historico_conversa: list = None) -> dict:
