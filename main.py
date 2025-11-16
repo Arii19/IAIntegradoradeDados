@@ -12,6 +12,11 @@ from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langgraph.graph import StateGraph, START, END
+
+try:
+    import streamlit as st
+except ImportError:
+    st = None
 from dotenv import load_dotenv
 
 # Função utilitária para instanciar o LLM
@@ -41,82 +46,149 @@ api_key = os.getenv("API_KEY")
 docs = []
 retriever = None
 retriever_keywords = None
-def carregar_documentos():
-    global docs, retriever, retriever_keywords, api_key
-    docs = []
-    docs_path = Path("docs")
-    if docs_path.exists():
-        # Carregar PDFs
-        for n in docs_path.glob("*.pdf"):
-            try:
-                loader = PyMuPDFLoader(str(n))
-                doc_pages = loader.load()
-                for page in doc_pages:
-                    page.metadata.update({
-                        "filename": n.name,
-                        "file_size": n.stat().st_size,
-                        "content_type": "pdf_document"
-                    })
-                docs.extend(doc_pages)
-                print(f"[OK] PDF Carregado: {n.name} ({len(doc_pages)} páginas)")
-            except Exception as e:
-                print(f"[ERRO] Erro ao carregar PDF {n.name}: {e}")
-        # Carregar Markdown files
-        for n in docs_path.glob("*.md"):
-            try:
-                with open(n, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                from langchain_core.documents import Document
-                md_doc = Document(
-                    page_content=content,
-                    metadata={
-                        "filename": n.name,
-                        "file_size": n.stat().st_size,
-                        "content_type": "markdown_document",
-                        "source": str(n)
-                    }
-                )
-                docs.append(md_doc)
-                print(f"[OK] Markdown Carregado: {n.name} ({len(content)} caracteres)")
-            except Exception as e:
-                print(f"[ERRO] Erro ao carregar Markdown {n.name}: {e}")
-    else:
-        print("[AVISO] Pasta 'docs' não encontrada. Nenhum documento carregado.")
 
-    retriever = None
-    retriever_keywords = None
-    if docs:
+# Cache de carregamento de documentos
+if st:
+    @st.cache_data(show_spinner=False)
+    def carregar_docs_cache():
+        docs = []
+        docs_path = Path("docs")
+        if docs_path.exists():
+            for n in docs_path.glob("*.pdf"):
+                try:
+                    loader = PyMuPDFLoader(str(n))
+                    doc_pages = loader.load()
+                    for page in doc_pages:
+                        page.metadata.update({
+                            "filename": n.name,
+                            "file_size": n.stat().st_size,
+                            "content_type": "pdf_document"
+                        })
+                    docs.extend(doc_pages)
+                except Exception as e:
+                    print(f"[ERRO] Erro ao carregar PDF {n.name}: {e}")
+            for n in docs_path.glob("*.md"):
+                try:
+                    with open(n, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    from langchain_core.documents import Document
+                    md_doc = Document(
+                        page_content=content,
+                        metadata={
+                            "filename": n.name,
+                            "file_size": n.stat().st_size,
+                            "content_type": "markdown_document",
+                            "source": str(n)
+                        }
+                    )
+                    docs.append(md_doc)
+                except Exception as e:
+                    print(f"[ERRO] Erro ao carregar Markdown {n.name}: {e}")
+        return docs
+
+    @st.cache_resource(show_spinner=False)
+    def carregar_embeddings_cache(docs, api_key):
+        if not docs or not api_key:
+            return None, None
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=800,
             chunk_overlap=100,
             separators=["\n\n", "\n", ". ", "! ", "? ", ", ", " ", ""]
         )
         chunks = splitter.split_documents(docs)
-        print(f"[CHUNKS] Total de chunks criados: {len(chunks)}")
-        if api_key:
-            try:
-                embeddings = GoogleGenerativeAIEmbeddings(
-                    model="models/gemma-3-27b-it",
-                    google_api_key=api_key
-                )
-                vectorstore = FAISS.from_documents(chunks, embeddings)
-                retriever = vectorstore.as_retriever(
-                    search_type="similarity_score_threshold",
-                    search_kwargs={"score_threshold": 0.15, "k": 8}
-                )
-                retriever_keywords = vectorstore.as_retriever(
-                    search_type="mmr",
-                    search_kwargs={"k": 4, "fetch_k": 10}
-                )
-            except Exception as e:
-                print(f"[AVISO] Erro ao inicializar embeddings: {e}")
-                print(f"[INFO] Sistema entrará em modo fallback com busca textual")
+        try:
+            embeddings = GoogleGenerativeAIEmbeddings(
+                model="models/gemma-3-27b-it",
+                google_api_key=api_key
+            )
+            vectorstore = FAISS.from_documents(chunks, embeddings)
+            retriever = vectorstore.as_retriever(
+                search_type="similarity_score_threshold",
+                search_kwargs={"score_threshold": 0.15, "k": 8}
+            )
+            retriever_keywords = vectorstore.as_retriever(
+                search_type="mmr",
+                search_kwargs={"k": 4, "fetch_k": 10}
+            )
+            return retriever, retriever_keywords
+        except Exception as e:
+            print(f"[AVISO] Erro ao inicializar embeddings: {e}")
+            print(f"[INFO] Sistema entrará em modo fallback com busca textual")
+            return None, None
+
+    def carregar_documentos():
+        global docs, retriever, retriever_keywords, api_key
+        docs = carregar_docs_cache()
+        retriever, retriever_keywords = carregar_embeddings_cache(docs, api_key)
+else:
+    def carregar_documentos():
+        global docs, retriever, retriever_keywords, api_key
+        docs = []
+        docs_path = Path("docs")
+        if docs_path.exists():
+            for n in docs_path.glob("*.pdf"):
+                try:
+                    loader = PyMuPDFLoader(str(n))
+                    doc_pages = loader.load()
+                    for page in doc_pages:
+                        page.metadata.update({
+                            "filename": n.name,
+                            "file_size": n.stat().st_size,
+                            "content_type": "pdf_document"
+                        })
+                    docs.extend(doc_pages)
+                except Exception as e:
+                    print(f"[ERRO] Erro ao carregar PDF {n.name}: {e}")
+            for n in docs_path.glob("*.md"):
+                try:
+                    with open(n, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    from langchain_core.documents import Document
+                    md_doc = Document(
+                        page_content=content,
+                        metadata={
+                            "filename": n.name,
+                            "file_size": n.stat().st_size,
+                            "content_type": "markdown_document",
+                            "source": str(n)
+                        }
+                    )
+                    docs.append(md_doc)
+                except Exception as e:
+                    print(f"[ERRO] Erro ao carregar Markdown {n.name}: {e}")
+        retriever = None
+        retriever_keywords = None
+        if docs:
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=800,
+                chunk_overlap=100,
+                separators=["\n\n", "\n", ". ", "! ", "? ", ", ", " ", ""]
+            )
+            chunks = splitter.split_documents(docs)
+            if api_key:
+                try:
+                    embeddings = GoogleGenerativeAIEmbeddings(
+                        model="models/gemma-3-27b-it",
+                        google_api_key=api_key
+                    )
+                    vectorstore = FAISS.from_documents(chunks, embeddings)
+                    retriever = vectorstore.as_retriever(
+                        search_type="similarity_score_threshold",
+                        search_kwargs={"score_threshold": 0.15, "k": 8}
+                    )
+                    retriever_keywords = vectorstore.as_retriever(
+                        search_type="mmr",
+                        search_kwargs={"k": 4, "fetch_k": 10}
+                    )
+                except Exception as e:
+                    print(f"[AVISO] Erro ao inicializar embeddings: {e}")
+                    print(f"[INFO] Sistema entrará em modo fallback com busca textual")
+                    retriever = None
+                    retriever_keywords = None
+            else:
+                print("[AVISO] API_KEY não encontrada. Funcionalidades RAG não estarão disponíveis.")
                 retriever = None
                 retriever_keywords = None
-        else:
-            print("[AVISO] API_KEY não encontrada. Funcionalidades RAG não estarão disponíveis.")
-            retriever = None
-            retriever_keywords = None
 
 
 # Só carrega documentos se rodar como script principal
