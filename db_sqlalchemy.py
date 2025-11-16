@@ -4,10 +4,10 @@ from sqlalchemy.orm import sessionmaker
 import os
 from datetime import datetime
 
-DATABASE_URL = os.getenv("DATABASE_URL")  # Ex: 'postgresql://user:password@host:port/dbname'
+DATABASE_URL = os.getenv("External_Database_URL")  # Ex: 'postgresql://user:password@host:port/dbname'
 engine = create_engine(DATABASE_URL)
 Base = declarative_base()
-
+git add .
 class ChatHistory(Base):
     __tablename__ = "chat_history"
     __table_args__ = {"schema": "chatapp"}  # Schema customizado
