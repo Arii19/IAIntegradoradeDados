@@ -379,3 +379,19 @@ else:
         <p><em>Respostas diretas e tecnicas para suas consultas de dados.</em></p>
     </div>
     """, unsafe_allow_html=True)
+
+# Exibe histórico de mensagens
+for pergunta, resposta in st.session_state.historico:
+    st.markdown(f"**Você:** {pergunta}")
+    st.markdown(f"**Bot:** {resposta}")
+
+# Espaço para empurrar o input para baixo
+st.write("")
+st.write("")
+
+# Caixa de pergunta no final
+with st.container():
+    pergunta = st.text_input("Digite sua pergunta:", key="pergunta_input")
+    if st.button("Enviar"):
+        # processa a pergunta
+        pass
