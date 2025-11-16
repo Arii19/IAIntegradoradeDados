@@ -1,233 +1,131 @@
-from pathlib import Path
-from dotenv import load_dotenv
 import os
-import json
 import pathlib
+import json
 import logging
+import hashlib
+from pathlib import Path
 from datetime import datetime
 from typing import TypedDict, Optional
-from functools import lru_cache
-import hashlib
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_core.messages import HumanMessage
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langgraph.graph import StateGraph, START, END
-import pymupdf4llm
+from dotenv import load_dotenv
 
-# =========================
-# Configurações e Logging
-# =========================
-# Setup de logging
+# Função utilitária para instanciar o LLM
+def get_llm():
+    return ChatGoogleGenerativeAI(
+        model="models/gemma-3-27b-it",
+        google_api_key=os.getenv("API_KEY"),
+        temperature=0.1,
+        convert_system_message_to_human=True
+    )
+
+# Função stub para logar interações
+def log_interacao(pergunta, resultado, acao_final):
+    # Aqui você pode integrar com um sistema de log real, banco ou arquivo
+    logger.info(f"[LOG_INTERACAO] Pergunta: {pergunta} | Ação: {acao_final} | Resposta: {str(resultado)[:120]}")
+
+
+# Setup de logging e variáveis globais
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 load_dotenv()
 api_key = os.getenv("API_KEY")
 
-# Modelo Gemma com temperatura baixa para mais consistência
-llm_triagem = None
+# =========================
+# RAG Avançado com múltiplas estratégias
+# =========================
+docs = []
+retriever = None
+retriever_keywords = None
+def carregar_documentos():
+    global docs, retriever, retriever_keywords, api_key
+    docs = []
+    docs_path = Path("docs")
+    if docs_path.exists():
+        # Carregar PDFs
+        for n in docs_path.glob("*.pdf"):
+            try:
+                loader = PyMuPDFLoader(str(n))
+                doc_pages = loader.load()
+                for page in doc_pages:
+                    page.metadata.update({
+                        "filename": n.name,
+                        "file_size": n.stat().st_size,
+                        "content_type": "pdf_document"
+                    })
+                docs.extend(doc_pages)
+                print(f"[OK] PDF Carregado: {n.name} ({len(doc_pages)} páginas)")
+            except Exception as e:
+                print(f"[ERRO] Erro ao carregar PDF {n.name}: {e}")
+        # Carregar Markdown files
+        for n in docs_path.glob("*.md"):
+            try:
+                with open(n, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                from langchain_core.documents import Document
+                md_doc = Document(
+                    page_content=content,
+                    metadata={
+                        "filename": n.name,
+                        "file_size": n.stat().st_size,
+                        "content_type": "markdown_document",
+                        "source": str(n)
+                    }
+                )
+                docs.append(md_doc)
+                print(f"[OK] Markdown Carregado: {n.name} ({len(content)} caracteres)")
+            except Exception as e:
+                print(f"[ERRO] Erro ao carregar Markdown {n.name}: {e}")
+    else:
+        print("[AVISO] Pasta 'docs' não encontrada. Nenhum documento carregado.")
 
-def get_llm():
-    """Lazy initialization of LLM"""
-    global llm_triagem
-    # Forçar nova inicialização para limpar cache
-    llm_triagem = None
-    
-    if not api_key:
-        raise ValueError("API_KEY not found in environment variables")
-    
-    try:
-        # Configuração mais simples e limpa
-        llm_triagem = ChatGoogleGenerativeAI(
-            model="models/gemma-3-27b-it",
-            temperature=0.1,
-            google_api_key=api_key
+    retriever = None
+    retriever_keywords = None
+    if docs:
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=800,
+            chunk_overlap=100,
+            separators=["\n\n", "\n", ". ", "! ", "? ", ", ", " ", ""]
         )
-        logger.info("LLM inicializado com sucesso")
-    except Exception as e:
-        logger.error(f"Erro ao inicializar LLM: {e}")
-        # Tentar configuração ainda mais básica
-        try:
-            llm_triagem = ChatGoogleGenerativeAI(
-                model="models/gemma-3-27b-it",
-                google_api_key=api_key
-            )
-            logger.info("LLM inicializado com configuração básica")
-        except Exception as e2:
-            logger.error(f"Erro crítico ao inicializar LLM: {e2}")
-            raise e2
-    
-    return llm_triagem
+        chunks = splitter.split_documents(docs)
+        print(f"[CHUNKS] Total de chunks criados: {len(chunks)}")
+        if api_key:
+            try:
+                embeddings = GoogleGenerativeAIEmbeddings(
+                    model="models/gemma-3-27b-it",
+                    google_api_key=api_key
+                )
+                vectorstore = FAISS.from_documents(chunks, embeddings)
+                retriever = vectorstore.as_retriever(
+                    search_type="similarity_score_threshold",
+                    search_kwargs={"score_threshold": 0.15, "k": 8}
+                )
+                retriever_keywords = vectorstore.as_retriever(
+                    search_type="mmr",
+                    search_kwargs={"k": 4, "fetch_k": 10}
+                )
+            except Exception as e:
+                print(f"[AVISO] Erro ao inicializar embeddings: {e}")
+                print(f"[INFO] Sistema entrará em modo fallback com busca textual")
+                retriever = None
+                retriever_keywords = None
+        else:
+            print("[AVISO] API_KEY não encontrada. Funcionalidades RAG não estarão disponíveis.")
+            retriever = None
+            retriever_keywords = None
 
-# =========================
-# Sistema de Cache e Otimização Avançado para Batch Processing
-# =========================
-# Cache para respostas frequentes
-CACHE_RESPOSTAS = {}
-CACHE_RAG = {}  # Cache específico para resultados RAG
-CACHE_LLM = {}  # Cache para respostas do LLM
 
-# Estatísticas de cache
-CACHE_STATS = {
-    'hits': 0,
-    'misses': 0,
-    'total_saves': 0
-}
-
-@lru_cache(maxsize=200)  # Aumentado para batch processing
-def cache_resposta_llm(prompt_hash: str, prompt: str):
-    """Cache específico para respostas do LLM"""
-    if prompt_hash in CACHE_LLM:
-        CACHE_STATS['hits'] += 1
-        return CACHE_LLM[prompt_hash]
-    
-    # Processar com LLM
-    resposta = get_llm().invoke([HumanMessage(content=prompt)])
-    resultado = resposta.content.strip() if resposta.content else ""
-    
-    # Salvar no cache
-    CACHE_LLM[prompt_hash] = resultado
-    CACHE_STATS['misses'] += 1
-    CACHE_STATS['total_saves'] += 1
-    
-    return resultado
-
-def limpar_cache():
-    """Limpa todos os caches - útil para batch processing"""
-    global CACHE_RESPOSTAS, CACHE_RAG, CACHE_LLM, llm_triagem
-    CACHE_RESPOSTAS.clear()
-    CACHE_RAG.clear() 
-    CACHE_LLM.clear()
-    
-    # Limpar também o LLM para forçar nova inicialização
-    llm_triagem = None
-    
-    # Reset stats
-    CACHE_STATS['hits'] = 0
-    CACHE_STATS['misses'] = 0
-    CACHE_STATS['total_saves'] = 0
-    
-    logger.info("Cache limpo para novo processamento em lote (incluindo LLM)")
-
-def resetar_llm():
-    """Força reset do LLM para limpar configurações antigas"""
-    global llm_triagem
-    llm_triagem = None
-    logger.info("LLM resetado - próxima chamada criará nova instância")
-
-def get_cache_stats():
-    """Retorna estatísticas do cache"""
-    total = CACHE_STATS['hits'] + CACHE_STATS['misses']
-    hit_rate = (CACHE_STATS['hits'] / total * 100) if total > 0 else 0
-    
-    return {
-        'cache_hits': CACHE_STATS['hits'],
-        'cache_misses': CACHE_STATS['misses'],
-        'hit_rate_percent': round(hit_rate, 2),
-        'total_cached_items': len(CACHE_RESPOSTAS) + len(CACHE_RAG) + len(CACHE_LLM),
-        'cache_sizes': {
-            'respostas': len(CACHE_RESPOSTAS),
-            'rag': len(CACHE_RAG),
-            'llm': len(CACHE_LLM)
-        }
-    }
-
-def gerar_hash_pergunta(pergunta: str) -> str:
-    """Gera hash da pergunta para cache"""
-    return hashlib.md5(pergunta.lower().strip().encode()).hexdigest()
-
-@lru_cache(maxsize=200)  # Aumentado para batch processing
-def cache_triagem_otimizado(pergunta_hash: str, pergunta: str):
-    """Cache otimizado para triagem - evita reprocessar perguntas similares"""
-    # Verificar cache específico primeiro
-    if pergunta_hash in CACHE_RESPOSTAS:
-        CACHE_STATS['hits'] += 1
-        logger.debug(f"Cache hit para triagem: {pergunta_hash[:8]}")
-        return CACHE_RESPOSTAS[pergunta_hash]
-    
-    # Processar triagem
-    resultado = triagem(pergunta)
-    
-    # Salvar no cache
-    CACHE_RESPOSTAS[pergunta_hash] = resultado
-    CACHE_STATS['misses'] += 1
-    CACHE_STATS['total_saves'] += 1
-    
-    return resultado
-
-def cache_rag_resultado(pergunta_hash: str, pergunta: str):
-    """Cache específico para resultados RAG"""
-    if pergunta_hash in CACHE_RAG:
-        CACHE_STATS['hits'] += 1
-        logger.debug(f"Cache hit para RAG: {pergunta_hash[:8]}")
-        return CACHE_RAG[pergunta_hash]
-    
-    # Processar RAG
-    resultado = perguntar_politica_RAG(pergunta)
-    
-    # Salvar no cache
-    CACHE_RAG[pergunta_hash] = resultado
-    CACHE_STATS['misses'] += 1
-    CACHE_STATS['total_saves'] += 1
-    
-    return resultado
-    return hashlib.md5(pergunta.lower().strip().encode()).hexdigest()
-
-@lru_cache(maxsize=200)  # Aumentado para batch processing
-def cache_triagem(pergunta_hash: str, pergunta: str):
-    """Cache otimizado para triagem - evita reprocessar perguntas similares"""
-    # Verificar cache específico primeiro
-    if pergunta_hash in CACHE_RESPOSTAS:
-        CACHE_STATS['hits'] += 1
-        logger.debug(f"Cache hit para triagem: {pergunta_hash[:8]}")
-        return CACHE_RESPOSTAS[pergunta_hash]
-    
-    # Processar triagem
-    resultado = triagem(pergunta)
-    
-    # Salvar no cache
-    CACHE_RESPOSTAS[pergunta_hash] = resultado
-    CACHE_STATS['misses'] += 1
-    CACHE_STATS['total_saves'] += 1
-    
-    return resultado
-
-def log_interacao(pergunta: str, resposta: dict, acao: str):
-    """Log das interações para monitoramento"""
-    try:
-        log_entry = {
-            "timestamp": datetime.now().isoformat(),
-            "pergunta": pergunta[:200],  # Limitar tamanho
-            "acao": acao,
-            "categoria": resposta.get("categoria", "N/A"),
-            "sucesso": acao == "AUTO_RESOLVER"
-        }
-        logger.info(f"Interação: {log_entry}")
-    except Exception as e:
-        logger.error(f"Erro ao fazer log: {e}")
-
-TRIAGEM_PROMPT = (
-    "Analise a mensagem e retorne SOMENTE um JSON:\n\n"
-    "{\n"
-    '  \"decisao\": \"AUTO_RESOLVER\" | \"PEDIR_INFO\",\n'
-    '  \"urgencia\": \"BAIXA\" | \"MEDIA\" | \"ALTA\",\n'
-    '  \"categoria\": \"ETL\" | \"TI\" | \"DADOS\" | \"SQL\" | \"GERAL\"\n'
-    "}\n\n"
-    "**REGRAS PRINCIPAIS:**\n"
-    "1. SEMPRE prefira AUTO_RESOLVER para perguntas técnicas específicas (procedures, sistemas, processos)\n"
-    "2. AUTO_RESOLVER para qualquer pergunta que mencione códigos, funções, ou nomes específicos\n"
-    "3. Use PEDIR_INFO apenas se a pergunta for extremamente vaga (ex: 'preciso de ajuda')\n"
-    "4. Perguntas sobre 'INT.', 'SP_', procedures, ou códigos específicos = AUTO_RESOLVER\n"
-    "**OBJETIVO:** Fornecer respostas técnicas precisas e diretas."
-)
+# Só carrega documentos se rodar como script principal
+if __name__ == "__main__":
+    carregar_documentos()
 
 def detectar_categoria_inteligente(pergunta: str) -> str:
     """Detecta categoria baseada em análise mais sofisticada"""
     pergunta_lower = pergunta.lower()
-    
-    # Dicionário de categorias com pesos
     categorias_pesos = {
         "OPERACIONAL": {
             "palavras": ["processo", "procedimento", "fluxo", "aprovação", "prazo", "documento", "assinatura", "protocolo", 
@@ -248,19 +146,15 @@ def detectar_categoria_inteligente(pergunta: str) -> str:
             "peso_base": 0
         }
     }
-    
     # Calcular pontuação para cada categoria
     for categoria, dados in categorias_pesos.items():
         for palavra in dados["palavras"]:
             if palavra in pergunta_lower:
                 dados["peso_base"] += 1
-    
     # Encontrar categoria com maior pontuação
     categoria_detectada = max(categorias_pesos.items(), key=lambda x: x[1]["peso_base"])
-    
     if categoria_detectada[1]["peso_base"] > 0:
         return categoria_detectada[0]
-    
     return "GERAL"
 
 def analisar_sentimento_pergunta(pergunta: str) -> dict:
@@ -313,63 +207,7 @@ def analisar_fallback(mensagem: str) -> dict:
         "tecnica_detectada": any(palavra in mensagem_lower for palavra in palavras_tecnicas)
     }
 
-def triagem(mensagem: str):
-    # Verificar cache primeiro
-    hash_pergunta = gerar_hash_pergunta(mensagem)
-    if hash_pergunta in CACHE_RESPOSTAS:
-        logger.info("Resposta recuperada do cache")
-        return CACHE_RESPOSTAS[hash_pergunta]
-    
-    # Análises preliminares
-    categoria_detectada = detectar_categoria_inteligente(mensagem)
-    sentimento = analisar_sentimento_pergunta(mensagem)
-    
-    # Ajustar prompt baseado no contexto detectado
-    prompt_contextual = f"{TRIAGEM_PROMPT}\n\n"
-    prompt_contextual += f"CONTEXTO DETECTADO:\n"
-    prompt_contextual += f"- Categoria provável: {categoria_detectada}\n"
-    prompt_contextual += f"- Tom da mensagem: {sentimento['tom']}\n"
-    prompt_contextual += f"- Indicadores: Urgência={sentimento['urgencia']}, Frustração={sentimento['frustacao']}\n\n"
-    prompt_contextual += f"Mensagem do usuário: {mensagem}"
-    
-    resposta = get_llm().invoke([HumanMessage(content=prompt_contextual)])
-    conteudo = resposta.content.strip()
 
-    # Limpeza mais robusta do JSON
-    if conteudo.startswith("```"):
-        conteudo = conteudo.strip("`")
-        if conteudo.lower().startswith("json"):
-            conteudo = conteudo[4:].strip()
-    
-    try:
-        resultado = json.loads(conteudo)
-        
-        # Enriquecer com análises contextuais
-        resultado["categoria"] = categoria_detectada
-        resultado["sentimento"] = sentimento
-        
-        # Ajustar decisão baseada no sentimento
-        if sentimento["tom"] == "urgente_frustrado" and resultado["urgencia"] not in ["ALTA", "CRITICA"]:
-            resultado["urgencia"] = "ALTA"
-            
-        # Detectar palavras-chave críticas
-        palavras_criticas = ["urgente", "crítico", "bloqueado", "parado", "emergência", "falha", "erro"]
-        if any(palavra in mensagem.lower() for palavra in palavras_criticas):
-            if resultado["urgencia"] in ["BAIXA", "MEDIA"]:
-                resultado["urgencia"] = "ALTA"
-        
-        # Salvar no cache
-        CACHE_RESPOSTAS[hash_pergunta] = resultado
-        
-        return resultado
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"Erro ao processar JSON: {e}")
-        # Fallback inteligente baseado em análise de texto
-        resultado_fallback = analisar_fallback(mensagem)
-        resultado_fallback["categoria"] = categoria_detectada
-        resultado_fallback["sentimento"] = sentimento
-        return resultado_fallback
 
 # =========================
 # Sistema de busca textual alternativo (quando embeddings não estão disponíveis)
@@ -416,101 +254,6 @@ def buscar_texto_simples(pergunta: str, docs_list: list) -> list:
     docs_relevantes.sort(key=lambda x: x[1], reverse=True)
     return [doc for doc, score in docs_relevantes[:6]]  # Top 6 documentos
 
-# =========================
-# RAG Avançado com múltiplas estratégias
-# =========================
-docs = []
-
-# Carregar documentos com melhor tratamento de erro
-docs_path = Path("docs")
-
-if docs_path.exists():
-    # Carregar PDFs
-    for n in docs_path.glob("*.pdf"):
-        try:
-            loader = PyMuPDFLoader(str(n))
-            doc_pages = loader.load()
-            
-            # Enriquecer metadados
-            for page in doc_pages:
-                page.metadata.update({
-                    "filename": n.name,
-                    "file_size": n.stat().st_size,
-                    "content_type": "pdf_document"
-                })
-            
-            docs.extend(doc_pages)
-            print(f"[OK] PDF Carregado: {n.name} ({len(doc_pages)} páginas)")
-        except Exception as e:
-            print(f"[ERRO] Erro ao carregar PDF {n.name}: {e}")
-    
-    # Carregar Markdown files
-    for n in docs_path.glob("*.md"):
-        try:
-            with open(n, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # Criar documento único para markdown
-            from langchain_core.documents import Document
-            md_doc = Document(
-                page_content=content,
-                metadata={
-                    "filename": n.name,
-                    "file_size": n.stat().st_size,
-                    "content_type": "markdown_document",
-                    "source": str(n)
-                }
-            )
-            
-            docs.append(md_doc)
-            print(f"[OK] Markdown Carregado: {n.name} ({len(content)} caracteres)")
-        except Exception as e:
-            print(f"[ERRO] Erro ao carregar Markdown {n.name}: {e}")
-else:
-    print("[AVISO] Pasta 'docs' não encontrada. Nenhum documento carregado.")
-
-retriever = None
-retriever_keywords = None
-
-if docs:
-    # Splitter mais inteligente para diferentes tipos de conteúdo
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,  # Aumentado para mais contexto
-        chunk_overlap=100,  # Mais overlap para continuidade
-        separators=["\n\n", "\n", ". ", "! ", "? ", ", ", " ", ""]
-    )
-    chunks = splitter.split_documents(docs)
-    
-    print(f"[CHUNKS] Total de chunks criados: {len(chunks)}")
-
-    if api_key:
-        try:
-            embeddings = GoogleGenerativeAIEmbeddings(
-                model="models/gemini-embedding-001",
-                google_api_key=api_key
-            )
-
-            # Retriever principal por similaridade semântica
-            vectorstore = FAISS.from_documents(chunks, embeddings)
-            retriever = vectorstore.as_retriever(
-                search_type="similarity_score_threshold",
-                search_kwargs={"score_threshold": 0.15, "k": 8}  # Threshold ainda menor, mais resultados
-            )
-            
-            # Retriever por palavras-chave (backup)
-            retriever_keywords = vectorstore.as_retriever(
-                search_type="mmr",  # Maximum Marginal Relevance para diversidade
-                search_kwargs={"k": 4, "fetch_k": 10}
-            )
-        except Exception as e:
-            print(f"[AVISO] Erro ao inicializar embeddings: {e}")
-            print(f"[INFO] Sistema entrará em modo fallback com busca textual")
-            retriever = None
-            retriever_keywords = None
-    else:
-        print("[AVISO] API_KEY não encontrada. Funcionalidades RAG não estarão disponíveis.")
-        retriever = None
-        retriever_keywords = None
 
 def expandir_busca(pergunta: str) -> list[str]:
     """Expande a busca com termos relacionados"""
@@ -797,7 +540,6 @@ def perguntar_politica_RAG(pergunta: str) -> dict:
 # =========================
 class AgentState(TypedDict, total=False):
     pergunta: str
-    triagem: dict
     resposta: Optional[str]
     citacoes: list[dict]
     rag_sucesso: bool
@@ -805,13 +547,7 @@ class AgentState(TypedDict, total=False):
     historico_tentativas: list[str]
     categoria: str
 
-def node_triagem(state: AgentState) -> AgentState:
-    resultado_triagem = triagem(state["pergunta"])
-    return {
-        "triagem": resultado_triagem,
-        "categoria": resultado_triagem.get("categoria", "GERAL"),
-        "historico_tentativas": ["triagem"]
-    }
+
 
 def node_auto_resolver(state: AgentState) -> AgentState:
     try:
@@ -856,14 +592,7 @@ def node_pedir_info(state: AgentState) -> AgentState:
         "historico_tentativas": state.get("historico_tentativas", []) + ["pedir_info"]
     }
 
-def decidir_pos_triagem(state: AgentState) -> str:
-    decisao = state["triagem"]["decisao"]
-    
-    # Só há duas opções agora: AUTO_RESOLVER ou PEDIR_INFO
-    if decisao == "AUTO_RESOLVER": 
-        return "auto"
-    else:  # decisao == "PEDIR_INFO" ou qualquer outra coisa
-        return "info"
+
 
 def decidir_pos_auto_resolver(state: AgentState) -> str:
     rag_sucesso = state.get("rag_sucesso", False)
@@ -880,22 +609,16 @@ def decidir_pos_auto_resolver(state: AgentState) -> str:
     # Se não teve sucesso, pedir mais informações para tentar novamente
     return "info"
 
+
 workflow = StateGraph(AgentState)
-workflow.add_node("triagem", node_triagem)
 workflow.add_node("auto_resolver", node_auto_resolver)
 workflow.add_node("pedir_info", node_pedir_info)
-
-workflow.add_edge(START, "triagem")
-workflow.add_conditional_edges("triagem", decidir_pos_triagem, {
-    "auto": "auto_resolver",
-    "info": "pedir_info"
-})
+workflow.add_edge(START, "auto_resolver")
 workflow.add_conditional_edges("auto_resolver", decidir_pos_auto_resolver, {
     "info": "pedir_info", 
     "ok": END
 })
 workflow.add_edge("pedir_info", END)
-
 grafo = workflow.compile()
 
 def processar_pergunta(pergunta: str, historico_conversa: list = None) -> dict:
@@ -911,8 +634,7 @@ def processar_pergunta(pergunta: str, historico_conversa: list = None) -> dict:
             get_llm()
         except Exception as e:
             logger.error(f"Erro ao inicializar LLM: {e}")
-            resetar_llm()  # Reset e tentar novamente
-            get_llm()
+            # Apenas loga o erro, não tenta resetar LLM (função removida)
         
         if not pergunta.strip():
             return {
@@ -1210,8 +932,7 @@ Resposta técnica (baseada em conhecimento geral):"""
         resposta = get_llm().invoke([HumanMessage(content=prompt_fallback)])
         resposta_texto = (resposta.content or "").strip()
         
-        # Adicionar disclaimer sobre modo limitado
-        resposta_final = f"{resposta_texto}\n\n⚠️ **Nota:** Cota de embeddings excedida. Resposta baseada em conhecimento geral. Para respostas mais precisas, aguarde renovação da cota ou verifique configurações da API."
+        resposta_final = resposta_texto
         
         return {
             "resposta": resposta_final,
