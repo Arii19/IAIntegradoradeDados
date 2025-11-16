@@ -4,6 +4,49 @@ from main import processar_pergunta
 from pathlib import Path
 import json
 from datetime import datetime
+import unicodedata
+import re
+
+def sanitize_text(text):
+    """Remove ou substitui caracteres problemáticos para Windows/Streamlit"""
+    if not text:
+        return ""
+    
+    # Normalizar unicode e remover acentos
+    text = unicodedata.normalize('NFD', text)
+    text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
+    
+    # Substituir caracteres problemáticos
+    replacements = {
+        'ç': 'c', 'Ç': 'C',
+        'ã': 'a', 'Ã': 'A',
+        'á': 'a', 'Á': 'A',
+        'à': 'a', 'À': 'A',
+        'â': 'a', 'Â': 'A',
+        'é': 'e', 'É': 'E',
+        'ê': 'e', 'Ê': 'E',
+        'í': 'i', 'Í': 'I',
+        'ó': 'o', 'Ó': 'O',
+        'ô': 'o', 'Ô': 'O',
+        'õ': 'o', 'Õ': 'O',
+        'ú': 'u', 'Ú': 'U',
+        'ü': 'u', 'Ü': 'U',
+        '`': "'",
+        '"': '"',
+        '"': '"',
+        ''': "'",
+        ''': "'",
+        '–': '-',
+        '—': '-',
+    }
+    
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    
+    # Manter apenas caracteres ASCII seguros + alguns extras
+    text = re.sub(r'[^\x00-\x7F\n\r\t]', '', text)
+    
+    return text
 
 load_dotenv()
 st.set_page_config(
@@ -136,15 +179,38 @@ def enviar_mensagem():
             # Passar o histórico atual para o contexto
             resposta_final = processar_pergunta(st.session_state.mensagem, st.session_state.historico)
             
+            # Sanitizar completamente a resposta
+            resposta_sanitizada = sanitize_text(resposta_final.get("resposta", ""))
+            
+            # Sanitizar citações se existirem
+            citacoes_sanitizadas = []
+            for cit in resposta_final.get("citacoes", []):
+                cit_sanitizada = {
+                    "documento": sanitize_text(cit.get("documento", "")),
+                    "pagina": cit.get("pagina", 1),
+                    "trecho": sanitize_text(cit.get("trecho", ""))[:300],  # Limitar tamanho
+                    "relevancia": sanitize_text(cit.get("relevancia", "Fonte"))
+                }
+                citacoes_sanitizadas.append(cit_sanitizada)
+            
             st.session_state.historico.append({
-                "pergunta": st.session_state.mensagem,
-                "resposta": resposta_final.get("resposta", ""),
-                "citacoes": resposta_final.get("citacoes", []),
+                "pergunta": sanitize_text(st.session_state.mensagem),
+                "resposta": resposta_sanitizada,
+                "citacoes": citacoes_sanitizadas,
                 "acao": resposta_final.get("acao_final", ""),
                 "timestamp": resposta_final.get("timestamp", datetime.now().isoformat())
             })
             st.session_state.mensagem = ""
             
+        except UnicodeEncodeError as e:
+            st.session_state.historico.append({
+                "pergunta": st.session_state.mensagem,
+                "resposta": f"Erro de codificacao: {str(e)}. Resposta contem caracteres especiais nao suportados.",
+                "citacoes": [],
+                "acao": "ERRO",
+                "timestamp": datetime.now().isoformat()
+            })
+            st.session_state.mensagem = ""
         except Exception as e:
             st.session_state.historico.append({
                 "pergunta": st.session_state.mensagem,
@@ -273,13 +339,12 @@ if st.session_state.historico:
             # Obter dados do item
             acao = item.get('acao', 'N/A')
          
-            # Ícone baseado na ação - usando HTML entities para compatibilidade com Windows
+            # Ícone baseado na ação - usando texto simples para evitar problemas de codificação
             icone_acao = {
-                'AUTO_RESOLVER': '&#9989;',  # ✅
-                'ABRIR_CHAMADO': '&#127903;',  # 🎫
-                'PEDIR_INFO': '&#10067;',  # ❓
-                'ERRO': '&#10060;'  # ❌
-            }.get(acao, '&#129302;')  # 🤖
+                'AUTO_RESOLVER': '[OK]',
+                'PEDIR_INFO': '[?]',
+                'ERRO': '[ERRO]'
+            }.get(acao, '[BOT]')
             
             # Mensagem do assistente
             st.markdown(f"""
