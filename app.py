@@ -7,7 +7,7 @@ from datetime import datetime
 
 load_dotenv()
 st.set_page_config(
-    page_title=" 🤖Integrador de Dados", 
+    page_title="Integrador de Dados", 
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -187,20 +187,20 @@ with st.sidebar:
         logo_files = list(logo_path.glob("*.png")) + list(logo_path.glob("*.jpg")) + list(logo_path.glob("*.jpeg")) + list(logo_path.glob("*.svg"))
         if logo_files:
             st.image(str(logo_files[0]), width=180)
-    st.markdown("### 🤖 Integrador de Dados")
+    st.markdown("### Integrador de Dados")
     st.markdown("**Smartbreeder**")
     
     st.markdown("---")
     
     # Botão para novo chat
-    if st.button("🆕 Novo Chat", use_container_width=True):
+    if st.button("Novo Chat", use_container_width=True):
         novo_chat()
     
-    st.markdown("### 📝 Histórico de Chats")
+    st.markdown("### Historico de Chats")
     
     # Mostrar chat atual se há conversas ativas
     if st.session_state.historico and st.session_state.chat_atual_id not in [chat["id"] for chat in st.session_state.chats_salvos]:
-        st.markdown("**📍 Chat Atual** (não salvo)")
+        st.markdown("**Chat Atual** (nao salvo)")
         st.markdown(f"*{len(st.session_state.historico)} mensagem(s)*")
         st.markdown("---")
     
@@ -209,10 +209,10 @@ with st.sidebar:
         for chat in reversed(st.session_state.chats_salvos):
             # Destacar o chat atual
             if st.session_state.chat_atual_id == chat["id"]:
-                button_label = f"📍 {chat['titulo']}"
+                button_label = f">> {chat['titulo']}"
                 button_help = "Chat atual"
             else:
-                button_label = f"💭 {chat['titulo']}"
+                button_label = f"- {chat['titulo']}"
                 button_help = f"Clique para carregar este chat ({len(chat['historico'])} mensagens)"
             
             if st.button(button_label, key=f"chat_{chat['id']}", use_container_width=True, help=button_help):
@@ -223,22 +223,22 @@ with st.sidebar:
     else:
         if not st.session_state.historico:
             st.markdown("*Nenhum chat iniciado*")
-            st.markdown("💡 *Clique em 'Novo Chat' para começar*")
+            st.markdown("*Clique em 'Novo Chat' para comecar*")
 
 # ÁREA PRINCIPAL - Chat
 st.markdown("""
 <div style="text-align: center; padding: 2rem;">
     <h1 style="color: #b4e6ed; font-size: 2.5rem; margin-bottom: 0.5rem;">
-        🤖 Assistente de Regras de Negócio
+        Assistente de Regras de Negocio
     </h1>
     <p style="color: #a0a0a0; font-size: 1.2rem;">
-        Integrador de Dados - Consulta técnica de procedures e estruturas
+        Integrador de Dados - Consulta tecnica de procedures e estruturas
     </p>
 </div>
 """, unsafe_allow_html=True)
 
 # Área de input de mensagem
-st.markdown("### 💬 Digite sua mensagem:")
+st.markdown("### Digite sua mensagem:")
 mensagem_input = st.text_input("Digite sua pergunta", key="mensagem", placeholder="Digite sua pergunta aqui...", label_visibility="collapsed")
 
 # Botões de ação centralizados
@@ -253,7 +253,7 @@ with col4:
 # Área do chat
 if st.session_state.historico:
     st.markdown("---")
-    st.markdown("### 💬 Conversa")
+    st.markdown("### Conversa")
     
     # Container para o chat com scroll
     chat_container = st.container()
@@ -264,7 +264,7 @@ if st.session_state.historico:
             st.markdown(f"""
             <div class="chat-message user-message">
                 <div>
-                    <strong>👤 Você:</strong><br>
+                    <strong>Voce:</strong><br>
                     {item['pergunta']}
                 </div>
             </div>
@@ -273,13 +273,13 @@ if st.session_state.historico:
             # Obter dados do item
             acao = item.get('acao', 'N/A')
          
-            # Ícone baseado na ação
+            # Ícone baseado na ação - usando HTML entities para compatibilidade com Windows
             icone_acao = {
-                'AUTO_RESOLVER': '✅',
-                'ABRIR_CHAMADO': '🎫', 
-                'PEDIR_INFO': '❓',
-                'ERRO': '❌'
-            }.get(acao, '🤖')
+                'AUTO_RESOLVER': '&#9989;',  # ✅
+                'ABRIR_CHAMADO': '&#127903;',  # 🎫
+                'PEDIR_INFO': '&#10067;',  # ❓
+                'ERRO': '&#10060;'  # ❌
+            }.get(acao, '&#129302;')  # 🤖
             
             # Mensagem do assistente
             st.markdown(f"""
@@ -295,11 +295,11 @@ if st.session_state.historico:
             
             # Citações (se houver)
             if item["citacoes"]:
-                with st.expander(f"📄 Ver Citações ({len(item['citacoes'])})", expanded=False):
+                with st.expander(f"Ver Citacoes ({len(item['citacoes'])})", expanded=False):
                     for j, cit in enumerate(item["citacoes"]):
                         relevancia = cit.get('relevancia', f'Fonte {j+1}')
                         st.markdown(f"""
-                        **{relevancia}** | **📋 {cit['documento']}** | **📄 Página {cit['pagina']}**
+                        **{relevancia}** | **{cit['documento']}** | **Pagina {cit['pagina']}**
                         
                         > {cit['trecho']}
                         """)
@@ -309,9 +309,8 @@ else:
     # Tela inicial quando não há mensagens
     st.markdown("""
     <div style="text-align: center; padding: 3rem; color: #a0a0a0;">
-        <h3>🎲 Integrador de Dados</h3>
-        <p>Digite uma pergunta técnica sobre procedures, estruturas de dados ou integração.</p>
-        <p>💡 <em>Respostas diretas e técnicas para suas consultas de dados.</em></p>
+        <h3>Integrador de Dados</h3>
+        <p>Digite uma pergunta tecnica sobre procedures, estruturas de dados ou integracao.</p>
+        <p><em>Respostas diretas e tecnicas para suas consultas de dados.</em></p>
     </div>
     """, unsafe_allow_html=True)
-''
