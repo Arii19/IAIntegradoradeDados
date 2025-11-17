@@ -9,8 +9,7 @@ engine = create_engine(DATABASE_URL)
 Base = declarative_base()
 
 class ChatHistory(Base):
-    __tablename__ = "chat_history"
-    __table_args__ = {"schema": "chatapp"}  # Schema customizado
+    __tablename__ = "chat_history"  # Schema customizado
 
     id = Column(Integer, primary_key=True)
     user_id = Column(String(64))
