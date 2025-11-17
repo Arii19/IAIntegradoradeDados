@@ -8,7 +8,10 @@ from datetime import datetime
 import unicodedata
 import re
 from db_sqlalchemy import ChatHistory, salvar_chat,buscar_historico
+from db_sqlalchemy import criar_tabelas
 
+    # Garante que a tabela do banco será criada se não existir
+criar_tabelas()
 def sanitize_text(text):
     """Remove ou substitui caracteres problemáticos para Windows/Streamlit"""
     if not text:
