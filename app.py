@@ -1,3 +1,4 @@
+
 import streamlit as st
 from dotenv import load_dotenv
 from main import processar_pergunta
@@ -6,6 +7,8 @@ import json
 from datetime import datetime
 import unicodedata
 import re
+# Importa funções de persistência
+from db_sqlalchemy import salvar_chat, buscar_historico
 
 def sanitize_text(text):
     """Remove ou substitui caracteres problemáticos para Windows/Streamlit"""
@@ -160,9 +163,25 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Inicializar states
+
+# Buscar histórico do banco ao abrir o app
 if "historico" not in st.session_state:
-    st.session_state.historico = []
+    try:
+        historico_db = buscar_historico(user_id="default", limit=20)
+        # Monta o formato esperado para o chat
+        st.session_state.historico = [
+            {
+                "pergunta": h.pergunta,
+                "resposta": h.resposta,
+                "citacoes": [],
+                "acao": "",
+                "timestamp": h.created_at.isoformat() if hasattr(h.created_at, 'isoformat') else str(h.created_at)
+            }
+            for h in reversed(historico_db)
+        ]
+    except Exception as e:
+        st.session_state.historico = []
+        st.warning(f"Não foi possível carregar histórico do banco: {e}")
 
 if "mensagem" not in st.session_state:
     st.session_state.mensagem = ""
@@ -176,23 +195,17 @@ if "chat_atual_id" not in st.session_state:
 def enviar_mensagem():
     if st.session_state.mensagem.strip():
         try:
-            # Passar o histórico atual para o contexto
             resposta_final = processar_pergunta(st.session_state.mensagem, st.session_state.historico)
-            
-            # Sanitizar completamente a resposta
             resposta_sanitizada = sanitize_text(resposta_final.get("resposta", ""))
-            
-            # Sanitizar citações se existirem
             citacoes_sanitizadas = []
             for cit in resposta_final.get("citacoes", []):
                 cit_sanitizada = {
                     "documento": sanitize_text(cit.get("documento", "")),
                     "pagina": cit.get("pagina", 1),
-                    "trecho": sanitize_text(cit.get("trecho", ""))[:300],  # Limitar tamanho
+                    "trecho": sanitize_text(cit.get("trecho", ""))[:300],
                     "relevancia": sanitize_text(cit.get("relevancia", "Fonte"))
                 }
                 citacoes_sanitizadas.append(cit_sanitizada)
-            
             st.session_state.historico.append({
                 "pergunta": sanitize_text(st.session_state.mensagem),
                 "resposta": resposta_sanitizada,
@@ -200,8 +213,16 @@ def enviar_mensagem():
                 "acao": resposta_final.get("acao_final", ""),
                 "timestamp": resposta_final.get("timestamp", datetime.now().isoformat())
             })
+            # Salva no banco (user_id pode ser customizado, aqui é 'default')
+            try:
+                salvar_chat(
+                    user_id="default",
+                    pergunta=sanitize_text(st.session_state.mensagem),
+                    resposta=resposta_sanitizada
+                )
+            except Exception as e:
+                st.warning(f"Não foi possível salvar no banco: {e}")
             st.session_state.mensagem = ""
-            
         except UnicodeEncodeError as e:
             st.session_state.historico.append({
                 "pergunta": st.session_state.mensagem,
