@@ -7,8 +7,7 @@ import json
 from datetime import datetime
 import unicodedata
 import re
-# Importa funções de persistência
-from db_sqlalchemy import salvar_chat, buscar_historico
+from db_sqlalchemy import ChatHistory, salvar_chat,buscar_historico
 
 def sanitize_text(text):
     """Remove ou substitui caracteres problemáticos para Windows/Streamlit"""
