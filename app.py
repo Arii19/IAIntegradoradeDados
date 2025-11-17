@@ -303,41 +303,18 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# Área de input de mensagem
+st.markdown("### Digite sua mensagem:")
+mensagem_input = st.text_input("Digite sua pergunta", key="mensagem", placeholder="Digite sua pergunta aqui...", label_visibility="collapsed")
 
-# CSS para fixar a caixa de input no rodapé
-st.markdown('''
-<style>
-.stChatInputFixed {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    width: 100vw;
-    background: #0f0f23;
-    padding: 1.2rem 1rem 0.7rem 1rem;
-    z-index: 9999;
-    box-shadow: 0 -2px 8px rgba(0,0,0,0.07);
-    border-top: 1px solid #222;
-}
-@media (max-width: 600px) {
-  .stChatInputFixed { padding: 0.7rem 0.2rem 0.5rem 0.2rem; }
-}
-</style>
-''', unsafe_allow_html=True)
-
-# Espaço extra para não sobrepor o chat
-st.markdown('<div style="height: 110px;"></div>', unsafe_allow_html=True)
-
-# Caixa de input fixa no rodapé
-st.markdown('<div class="stChatInputFixed">', unsafe_allow_html=True)
-col1, col2 = st.columns([6, 1])
-with col1:
-    mensagem_input = st.text_input(
-        "Digite sua pergunta", key="mensagem", placeholder="Digite sua pergunta aqui...", label_visibility="collapsed"
-    )
+# Botões de ação centralizados
+col1, col2, col3, col4, col5 = st.columns([2, 1, 0.5, 1, 2])
 with col2:
     if st.button("Enviar", on_click=enviar_mensagem, use_container_width=True):
         pass
-st.markdown('</div>', unsafe_allow_html=True)
+with col4:
+    if st.button("Novo Chat", on_click=novo_chat, use_container_width=True):
+        pass
 
 # Área do chat
 if st.session_state.historico:
